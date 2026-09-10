@@ -216,6 +216,12 @@ def main() -> None:
     p.add_argument("--pad-hold", type=float, default=8.0, help="s on the pad before launch")
     p.add_argument("--post-land", type=float, default=15.0, help="s of transmission after landing")
     p.add_argument("--gps-lock-after", type=int, default=3, help="packets before the first fix")
+    p.add_argument(
+        "--gps-dropout-below", type=float, default=0.0, metavar="M",
+        help="stop sending a fix once descending below this altitude (default 0, "
+             "off). Models losing lock near the ground - the case where the last "
+             "known position is not the landing position",
+    )
     args = p.parse_args()
 
     rng = random.Random(args.seed)
@@ -269,6 +275,7 @@ def main() -> None:
     n_packets = int(flight[-1].t_s / period) + 1
     started = time.monotonic()
     sent = dropped = 0
+    gps_lost = False
     transmitted: list[dict] = []
 
     try:
@@ -292,8 +299,22 @@ def main() -> None:
                 "temp_c": round(chamber_c + rng.gauss(0, SIGMA_TEMP_C * args.noise), 2),
             }
 
+            # A fix can stop arriving well before the link does: antenna
+            # orientation under canopy, low elevation angle near the ground,
+            # or simply a receiver that has lost lock. When that happens the
+            # ground station's newest position is older than its newest packet.
+            # Latched: a receiver that loses lock on the way down does not
+            # generally get it back once it is lying in a field, and that is
+            # the case worth designing the recovery view around.
+            if (
+                args.gps_dropout_below > 0
+                and s.vert_mps < 0
+                and s.alt_m < args.gps_dropout_below
+            ):
+                gps_lost = True
+            has_fix = n >= args.gps_lock_after and not gps_lost
             gps_text = "(no fix)"
-            if n >= args.gps_lock_after:
+            if has_fix:
                 drift_t = min(max(t - args.pad_hold, 0.0), t_land - args.pad_hold)
                 north_m = wind_n * drift_t + rng.gauss(0, SIGMA_GPS_M * args.noise)
                 east_m = wind_e * drift_t + rng.gauss(0, SIGMA_GPS_M * args.noise)
@@ -358,6 +379,10 @@ def main() -> None:
             "truth_apogee_m": round(apogee.alt_m, 3),
             "truth_apogee_t_s": round(apogee.t_s, 3),
             "truth_land_t_s": round(t_land, 3),
+            "truth_land_lat_deg": round(args.pad_lat + land_n / M_PER_DEG_LAT, 7),
+            "truth_land_lon_deg": round(args.pad_lon + land_e / m_per_deg_lon, 7),
+            "truth_land_dist_m": round(math.hypot(land_n, land_e), 1),
+            "truth_land_bearing_deg": round(math.degrees(math.atan2(land_e, land_n)) % 360, 1),
             "packets": transmitted,
         }), encoding="utf-8")
         print(f"  fixture    {args.fixture} ({len(transmitted)} packets)")

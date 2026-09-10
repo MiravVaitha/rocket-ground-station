@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import AltitudeChart from "./components/AltitudeChart";
 import { deriveFlight, type FlightPhase } from "./lib/flight";
 import type { LinkState } from "./lib/link";
+import { DRIFT_ALT_M, deriveRecovery } from "./lib/recovery";
 import {
   PAD_SAMPLES,
   type Packet,
@@ -105,6 +106,11 @@ export default function Home() {
   const [padOverride, setPadOverride] = useState<number | null>(null);
   const [target_m, setTarget] = useState(400);
 
+  // A view, not a mode. Mode is where the data comes from (live or replay);
+  // view is what you are looking at. Keeping them on separate axes is what
+  // makes "replay the recovery view" expressible at all.
+  const [pane, setPane] = useState<"flight" | "recovery">("flight");
+
   // Stream clock. `anchor` pins the newest packet's mission time to the wall
   // clock instant it arrived; the interval advances `now_s` between arrivals so
   // staleness keeps climbing while nothing is coming in. Without that the UI
@@ -167,6 +173,18 @@ export default function Home() {
   const shown_m = apogee?.alt_m ?? view.peak_m;
   const delta_m = shown_m === null ? null : shown_m - target_m;
 
+  const fix =
+    view.lastFix?.lat_deg !== undefined && view.lastFix.lon_deg !== undefined
+      ? { lat_deg: view.lastFix.lat_deg, lon_deg: view.lastFix.lon_deg }
+      : null;
+  const rec = deriveRecovery({
+    pad: view.padFix,
+    fix,
+    fixAlt_m: view.lastFixAlt_m,
+    age_s: view.lastFixAge_s,
+    packetsSinceFix: view.packetsSinceFix,
+  });
+
   return (
     <div className="flex h-screen flex-col bg-[#0d0d0d] font-sans text-white">
       <header className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2.5">
@@ -174,6 +192,21 @@ export default function Home() {
           CanSat Ground Station
         </h1>
         <div className="flex items-center gap-4 text-xs font-medium">
+          <div className="flex overflow-hidden rounded border border-white/10 text-[11px]">
+            {(["flight", "recovery"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setPane(v)}
+                className={`px-2.5 py-1 uppercase tracking-wider ${
+                  pane === v
+                    ? "bg-white/10 text-white"
+                    : "text-[#898781] hover:text-white"
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
           <span className="rounded border border-white/15 px-2 py-0.5 uppercase tracking-wider text-[#c3c2b7]">
             {PHASE_LABEL[view.phase]}
           </span>
@@ -192,10 +225,18 @@ export default function Home() {
           {/* The chart is the primary surface, not the map: a rocket's ground
               track during ascent is a near-vertical line and says almost
               nothing in two dimensions. */}
-          <div className="flex min-h-0 flex-[2] flex-col">
-            <AltitudeChart samples={samples} apogee={apogee} target_m={target_m} />
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-white/10">
+          {pane === "flight" && (
+            <div key="chart" className="flex min-h-0 flex-[2] flex-col">
+              <AltitudeChart samples={samples} apogee={apogee} target_m={target_m} />
+            </div>
+          )}
+          {/* Keyed, so toggling the view resizes this element rather than
+              unmounting it - remounting would rebuild the map and throw away
+              every tile it has already fetched. */}
+          <div
+            key="map"
+            className="min-h-0 flex-1 overflow-hidden rounded-lg border border-white/10"
+          >
             <FlightMap
               track={view.track}
               pad={view.padFix}
@@ -209,162 +250,280 @@ export default function Home() {
                   : null
               }
               stale={view.lastFixAge_s > 5}
+              focus={pane}
             />
           </div>
         </section>
 
         <aside className="flex w-[340px] shrink-0 flex-col gap-3 overflow-y-auto border-l border-white/10 p-3">
-          <Panel>
-            <div className="text-[11px] font-medium uppercase tracking-wider text-[#898781]">
-              {apogee ? "Apogee" : "Peak so far"}
-            </div>
-            {/* Proportional figures on the hero: tabular digits read loose at
-                display size. */}
-            {shown_m === null ? (
-              <div className="py-2 text-2xl font-semibold leading-tight text-[#898781]">
-                {PLACEHOLDER}
-                <span className="ml-1.5 text-base font-normal">m</span>
-              </div>
-            ) : (
-              <div className="text-5xl font-semibold leading-tight text-white">
-                {shown_m.toFixed(0)}
-                <span className="ml-1.5 text-base font-normal text-[#898781]">m</span>
-              </div>
-            )}
-            {delta_m !== null && shown_m !== null && (
-              <div className="mt-0.5 text-xs tabular-nums text-[#c3c2b7]">
-                {delta_m >= 0 ? "+" : ""}
-                {delta_m.toFixed(0)} m against {target_m} m target
-                <span className="ml-1 text-[#898781]">
-                  ({((shown_m / target_m) * 100).toFixed(0)}%)
-                </span>
-              </div>
-            )}
-            {apogee && (
-              <div className="mt-1 text-[11px] tabular-nums text-[#898781]">
-                at t+{apogee.t_s.toFixed(1)} s, declared{" "}
-                {(apogee.detectedAt_s - apogee.t_s).toFixed(1)} s later
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Target">
-            <div className="flex items-center gap-1.5">
-              {TARGET_PRESETS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTarget(t)}
-                  className={`rounded px-2 py-1 text-[11px] font-medium tabular-nums ${
-                    target_m === t
-                      ? "bg-white/10 text-white"
-                      : "text-[#898781] hover:text-white"
-                  }`}
-                >
-                  {t} m
-                </button>
-              ))}
-              <input
-                type="number"
-                value={target_m}
-                onChange={(e) => setTarget(Number(e.target.value))}
-                className="ml-auto w-20 rounded border border-white/10 bg-[#0d0d0d] px-1.5 py-1 text-right text-xs tabular-nums text-white"
-              />
-            </div>
-            <p className="mt-1.5 text-[10px] leading-snug text-[#898781]">
-              Set on the ground. The payload does not transmit what it was
-              aiming for.
-            </p>
-          </Panel>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Tile
-              label="Altitude"
-              value={alt_m === null ? PLACEHOLDER : alt_m.toFixed(0)}
-              unit="m"
-              muted={stale}
-              note={stale ? `${link.lastPacketAge_s.toFixed(0)} s old` : undefined}
-            />
-            <Tile
-              label="Chamber"
-              value={latest ? latest.temp_c.toFixed(1) : PLACEHOLDER}
-              unit="°C"
-              muted={stale}
-            />
-            <Tile
-              label="Packet loss"
-              value={link.expected === 0 ? PLACEHOLDER : (link.lossRate * 100).toFixed(1)}
-              unit="%"
-              note={
-                link.expected === 0
-                  ? undefined
-                  : `${(link.windowLossRate * 100).toFixed(0)}% last 30`
-              }
-            />
-            <Tile
-              label="Packets"
-              value={link.expected === 0 ? PLACEHOLDER : String(link.received)}
-              note={link.expected === 0 ? undefined : `${link.lost} lost`}
-            />
-          </div>
-
-          <Panel title="Flight events">
-            {view.events.length === 0 ? (
-              <p className="text-xs text-[#898781]">Waiting for telemetry.</p>
-            ) : (
-              <ul className="flex flex-col gap-1 text-xs tabular-nums">
-                {view.events.map((e) => (
-                  <li key={e.label} className="flex items-baseline gap-2">
-                    <span
-                      className="w-16 font-semibold"
-                      style={{
-                        color: e.label === "APOGEE" ? "#d95926" : "#c3c2b7",
-                      }}
-                    >
-                      {e.label}
+          {pane === "flight" ? (
+            <>
+              <Panel>
+                <div className="text-[11px] font-medium uppercase tracking-wider text-[#898781]">
+                  {apogee ? "Apogee" : "Peak so far"}
+                </div>
+                {/* Proportional figures on the hero: tabular digits read loose at
+                    display size. */}
+                {shown_m === null ? (
+                  <div className="py-2 text-2xl font-semibold leading-tight text-[#898781]">
+                    {PLACEHOLDER}
+                    <span className="ml-1.5 text-base font-normal">m</span>
+                  </div>
+                ) : (
+                  <div className="text-5xl font-semibold leading-tight text-white">
+                    {shown_m.toFixed(0)}
+                    <span className="ml-1.5 text-base font-normal text-[#898781]">m</span>
+                  </div>
+                )}
+                {delta_m !== null && shown_m !== null && (
+                  <div className="mt-0.5 text-xs tabular-nums text-[#c3c2b7]">
+                    {delta_m >= 0 ? "+" : ""}
+                    {delta_m.toFixed(0)} m against {target_m} m target
+                    <span className="ml-1 text-[#898781]">
+                      ({((shown_m / target_m) * 100).toFixed(0)}%)
                     </span>
-                    <span className="text-[#898781]">t+{e.t_s.toFixed(1)} s</span>
-                    {e.alt_m !== undefined && (
-                      <span className="ml-auto text-white">
-                        {e.alt_m.toFixed(0)} m
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
+                  </div>
+                )}
+                {apogee && (
+                  <div className="mt-1 text-[11px] tabular-nums text-[#898781]">
+                    at t+{apogee.t_s.toFixed(1)} s, declared{" "}
+                    {(apogee.detectedAt_s - apogee.t_s).toFixed(1)} s later
+                  </div>
+                )}
+              </Panel>
 
-          <Panel
-            title="Pad reference"
-            action={
-              <button
-                onClick={() => setPadOverride(padReferenceFromLatest(packets))}
-                disabled={packets.length < PAD_SAMPLES}
-                className="text-[11px] text-[#898781] hover:text-white disabled:text-white/20"
+              <Panel title="Target">
+                <div className="flex items-center gap-1.5">
+                  {TARGET_PRESETS.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTarget(t)}
+                      className={`rounded px-2 py-1 text-[11px] font-medium tabular-nums ${
+                        target_m === t
+                          ? "bg-white/10 text-white"
+                          : "text-[#898781] hover:text-white"
+                      }`}
+                    >
+                      {t} m
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    value={target_m}
+                    onChange={(e) => setTarget(Number(e.target.value))}
+                    className="ml-auto w-20 rounded border border-white/10 bg-[#0d0d0d] px-1.5 py-1 text-right text-xs tabular-nums text-white"
+                  />
+                </div>
+                <p className="mt-1.5 text-[10px] leading-snug text-[#898781]">
+                  Set on the ground. The payload does not transmit what it was
+                  aiming for.
+                </p>
+              </Panel>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Tile
+                  label="Altitude"
+                  value={alt_m === null ? PLACEHOLDER : alt_m.toFixed(0)}
+                  unit="m"
+                  muted={stale}
+                  note={stale ? `${link.lastPacketAge_s.toFixed(0)} s old` : undefined}
+                />
+                <Tile
+                  label="Chamber"
+                  value={latest ? latest.temp_c.toFixed(1) : PLACEHOLDER}
+                  unit="°C"
+                  muted={stale}
+                />
+                <Tile
+                  label="Packet loss"
+                  value={link.expected === 0 ? PLACEHOLDER : (link.lossRate * 100).toFixed(1)}
+                  unit="%"
+                  note={
+                    link.expected === 0
+                      ? undefined
+                      : `${(link.windowLossRate * 100).toFixed(0)}% last 30`
+                  }
+                />
+                <Tile
+                  label="Packets"
+                  value={link.expected === 0 ? PLACEHOLDER : String(link.received)}
+                  note={link.expected === 0 ? undefined : `${link.lost} lost`}
+                />
+              </div>
+
+              <Panel title="Flight events">
+                {view.events.length === 0 ? (
+                  <p className="text-xs text-[#898781]">Waiting for telemetry.</p>
+                ) : (
+                  <ul className="flex flex-col gap-1 text-xs tabular-nums">
+                    {view.events.map((e) => (
+                      <li key={e.label} className="flex items-baseline gap-2">
+                        <span
+                          className="w-16 font-semibold"
+                          style={{
+                            color: e.label === "APOGEE" ? "#d95926" : "#c3c2b7",
+                          }}
+                        >
+                          {e.label}
+                        </span>
+                        <span className="text-[#898781]">t+{e.t_s.toFixed(1)} s</span>
+                        {e.alt_m !== undefined && (
+                          <span className="ml-auto text-white">
+                            {e.alt_m.toFixed(0)} m
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Panel>
+
+              <Panel
+                title="Pad reference"
+                action={
+                  <button
+                    onClick={() => setPadOverride(padReferenceFromLatest(packets))}
+                    disabled={packets.length < PAD_SAMPLES}
+                    className="text-[11px] text-[#898781] hover:text-white disabled:text-white/20"
+                  >
+                    re-capture
+                  </button>
+                }
               >
-                re-capture
-              </button>
-            }
-          >
-            <div className="text-sm tabular-nums text-white">
-              {view.pad_pa === null
-                ? `waiting for ${PAD_SAMPLES} packets`
-                : `${view.pad_pa.toFixed(1)} Pa`}
-            </div>
-            <p className="mt-1 text-[10px] leading-snug text-[#898781]">
-              {padOverride === null
-                ? `Median of the first ${PAD_SAMPLES} packets. Every altitude is measured against it.`
-                : "Manually re-captured from the most recent packets."}
-              {padOverride !== null && (
-                <button
-                  onClick={() => setPadOverride(null)}
-                  className="ml-1 underline hover:text-white"
-                >
-                  reset
-                </button>
+                <div className="text-sm tabular-nums text-white">
+                  {view.pad_pa === null
+                    ? `waiting for ${PAD_SAMPLES} packets`
+                    : `${view.pad_pa.toFixed(1)} Pa`}
+                </div>
+                <p className="mt-1 text-[10px] leading-snug text-[#898781]">
+                  {padOverride === null
+                    ? `Median of the first ${PAD_SAMPLES} packets. Every altitude is measured against it.`
+                    : "Manually re-captured from the most recent packets."}
+                  {padOverride !== null && (
+                    <button
+                      onClick={() => setPadOverride(null)}
+                      className="ml-1 underline hover:text-white"
+                    >
+                      reset
+                    </button>
+                  )}
+                </p>
+              </Panel>
+            </>
+          ) : rec === null ? (
+            <Panel title="Recovery">
+              <p className="text-xs text-[#898781]">
+                No GPS fix received yet. Bearing and distance need a pad
+                position and a payload position.
+              </p>
+            </Panel>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Panel>
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-[#898781]">
+                    Distance
+                  </div>
+                  <div className="text-4xl font-semibold leading-tight text-white">
+                    {rec.distance_m < 1000
+                      ? rec.distance_m.toFixed(0)
+                      : (rec.distance_m / 1000).toFixed(2)}
+                    <span className="ml-1 text-sm font-normal text-[#898781]">
+                      {rec.distance_m < 1000 ? "m" : "km"}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-[#898781]">from the pad</div>
+                </Panel>
+                <Panel>
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-[#898781]">
+                    Bearing
+                  </div>
+                  <div className="text-4xl font-semibold leading-tight text-white">
+                    {rec.bearing_deg.toFixed(0).padStart(3, "0")}
+                    <span className="text-sm font-normal text-[#898781]">
+                      &deg;
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-[#898781]">
+                    {rec.compass}, true north
+                  </div>
+                </Panel>
+              </div>
+
+              {/* The whole reason this view is careful: a bearing taken from a
+                  stale fix, presented as if it were current, is the failure
+                  that actually loses the payload. */}
+              {rec.suspect && (
+                <div className="rounded-lg border border-[#fab219]/40 bg-[#fab219]/10 p-3">
+                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#fab219]">
+                    <span aria-hidden>&#9650;</span> Last fix is not the landing
+                    site
+                  </div>
+                  <p className="text-[11px] leading-snug text-[#c3c2b7]">
+                    {rec.fixAlt_m !== null && rec.fixAlt_m > DRIFT_ALT_M
+                      ? `The payload was still ${rec.fixAlt_m.toFixed(0)} m up when it was last seen, so it drifted further before landing. `
+                      : ""}
+                    {rec.packetsSinceFix > 0
+                      ? `${rec.packetsSinceFix} packet${rec.packetsSinceFix === 1 ? "" : "s"} have arrived since, with no position. `
+                      : ""}
+                    Treat the distance as a lower bound and search downwind.
+                  </p>
+                </div>
               )}
-            </p>
-          </Panel>
+
+              <Panel title="Last known fix">
+                {/* Selectable, and in the order every phone map expects. */}
+                <div className="select-all rounded border border-white/10 bg-[#0d0d0d] px-2 py-1.5 text-sm tabular-nums text-white">
+                  {rec.fix.lat_deg.toFixed(6)}, {rec.fix.lon_deg.toFixed(6)}
+                </div>
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] tabular-nums">
+                  <dt className="text-[#898781]">Fix age</dt>
+                  <dd className="text-right text-white">
+                    {rec.age_s.toFixed(0)} s
+                  </dd>
+                  <dt className="text-[#898781]">Packets since</dt>
+                  <dd
+                    className="text-right"
+                    style={{
+                      color: rec.packetsSinceFix > 0 ? "#fab219" : "#ffffff",
+                    }}
+                  >
+                    {rec.packetsSinceFix}
+                  </dd>
+                  <dt className="text-[#898781]">Altitude at fix</dt>
+                  <dd className="text-right text-white">
+                    {rec.fixAlt_m === null
+                      ? PLACEHOLDER
+                      : `${rec.fixAlt_m.toFixed(0)} m`}
+                  </dd>
+                  <dt className="text-[#898781]">Pad</dt>
+                  <dd className="text-right text-white">
+                    {view.padFix
+                      ? `${view.padFix.lat_deg.toFixed(4)}, ${view.padFix.lon_deg.toFixed(4)}`
+                      : PLACEHOLDER}
+                  </dd>
+                </dl>
+              </Panel>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Tile
+                  label="Packet loss"
+                  value={
+                    link.expected === 0
+                      ? PLACEHOLDER
+                      : (link.lossRate * 100).toFixed(1)
+                  }
+                  unit="%"
+                />
+                <Tile
+                  label="Last packet"
+                  value={link.lastPacketAge_s.toFixed(0)}
+                  unit="s ago"
+                  muted={stale}
+                />
+              </div>
+            </>
+          )}
         </aside>
       </main>
     </div>

@@ -57,6 +57,10 @@ export type FlightView = {
   lastFix: Packet | null;
   /** Mission time of that fix, so the UI can show how stale it is. */
   lastFixAge_s: number;
+  /** Packets received after the last one that carried a fix. */
+  packetsSinceFix: number;
+  /** Derived altitude at the last fix. Above zero means it drifted further. */
+  lastFixAlt_m: number | null;
   /**
    * Where the pad is: the median of the fixes taken before launch. Median
    * rather than first, because a single fix carries a few metres of GPS error
@@ -105,12 +109,19 @@ export function deriveFlight(
 
   const track: [number, number][] = [];
   let lastFix: Packet | null = null;
-  for (const p of packets) {
+  let lastFixIndex = -1;
+  for (let i = 0; i < packets.length; i++) {
+    const p = packets[i];
     if (p.lat_deg !== undefined && p.lon_deg !== undefined) {
       track.push([p.lon_deg, p.lat_deg]);
       lastFix = p;
+      lastFixIndex = i;
     }
   }
+  // Packets that arrived with no position. The count, not just the age, is
+  // what tells you a fix is stale rather than merely recent-ish.
+  const packetsSinceFix =
+    lastFixIndex < 0 ? 0 : packets.length - 1 - lastFixIndex;
 
   const link = packets.length ? linkStats(packets, now_s) : EMPTY_LINK;
 
@@ -129,6 +140,8 @@ export function deriveFlight(
       track,
       lastFix,
       lastFixAge_s: 0,
+      packetsSinceFix,
+      lastFixAlt_m: null,
       padFix: null,
     };
   }
@@ -190,6 +203,8 @@ export function deriveFlight(
     track,
     lastFix,
     lastFixAge_s: lastFix ? Math.max(now_s - packetTime(lastFix), 0) : 0,
+    packetsSinceFix,
+    lastFixAlt_m: lastFixIndex >= 0 ? samples[lastFixIndex].alt_m : null,
     padFix,
   };
 }

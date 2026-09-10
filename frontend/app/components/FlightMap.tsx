@@ -77,6 +77,12 @@ type Props = {
   position: MapPoint | null;
   /** Greys the payload marker when the fix is old. */
   stale?: boolean;
+  /**
+   * "recovery" frames both the pad and the last fix and draws the bearing
+   * between them. "flight" leaves the camera alone and hides the bearing, so
+   * the track is not cluttered while the flight is still happening.
+   */
+  focus?: "flight" | "recovery";
 };
 
 function lineFeature(coords: [number, number][]) {
@@ -102,7 +108,13 @@ const payloadSvg = (stale: boolean) => `<svg width="18" height="18" viewBox="0 0
   <circle cx="9" cy="9" r="5.5" fill="${stale ? "#898781" : "#d95926"}"
           stroke="#1a1a19" stroke-width="2"/></svg>`;
 
-export default function FlightMap({ track, pad, position, stale }: Props) {
+export default function FlightMap({
+  track,
+  pad,
+  position,
+  stale,
+  focus = "flight",
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const readyRef = useRef(false);
@@ -134,6 +146,18 @@ export default function FlightMap({ track, pad, position, stale }: Props) {
         paint: { "line-color": "#3987e5", "line-width": 3 },
         layout: { "line-cap": "round", "line-join": "round" },
       });
+      map.addSource("bearing", { type: "geojson", data: lineFeature([]) });
+      map.addLayer({
+        id: "bearing-line",
+        type: "line",
+        source: "bearing",
+        // Dashed because it is a heading to walk, not a path anything flew.
+        paint: {
+          "line-color": "#d95926",
+          "line-width": 2,
+          "line-dasharray": [2, 2],
+        },
+      });
       readyRef.current = true;
       // Re-run the effects below so anything that arrived during style load
       // gets applied to the map that now exists.
@@ -152,13 +176,45 @@ export default function FlightMap({ track, pad, position, stale }: Props) {
     };
   }, []);
 
-  // Track geometry.
+  // Track geometry, and the pad-to-fix bearing line in recovery.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
-    const src = map.getSource("track") as GeoJSONSource | undefined;
-    src?.setData(lineFeature(track));
+    (map.getSource("track") as GeoJSONSource | undefined)?.setData(
+      lineFeature(track)
+    );
+    const bearing =
+      focus === "recovery" && pad && position
+        ? lineFeature([
+            [pad.lon_deg, pad.lat_deg],
+            [position.lon_deg, position.lat_deg],
+          ])
+        : lineFeature([]);
+    (map.getSource("bearing") as GeoJSONSource | undefined)?.setData(bearing);
   });
+
+  // Recovery framing: fit both ends in view. Only while that view is open, so
+  // switching back to the flight does not yank the camera around.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current || focus !== "recovery" || !pad || !position)
+      return;
+    map.fitBounds(
+      [
+        [
+          Math.min(pad.lon_deg, position.lon_deg),
+          Math.min(pad.lat_deg, position.lat_deg),
+        ],
+        [
+          Math.max(pad.lon_deg, position.lon_deg),
+          Math.max(pad.lat_deg, position.lat_deg),
+        ],
+      ],
+      // Capped: Esri imagery upsamples past 16 in open country, and a
+      // blurred basemap is worse than a slightly wider one.
+      { padding: 70, maxZoom: 16, duration: 0 }
+    );
+  }, [focus, pad, position]);
 
   // Pad marker, plus the one camera move: centre on the pad the first time it
   // is known. After that the view belongs to whoever is driving.
