@@ -1,0 +1,97 @@
+# CanSat Ground Station
+
+Receive-only ground station for a rocket-borne CanSat payload. Next.js frontend, FastAPI backend, a Python flight simulator standing in for the payload, and a simulated LoRa-style downlink.
+
+## Stack
+
+- **Frontend**: Next.js (App Router) + TypeScript + Tailwind — `frontend/`
+- **Backend**: Python 3.12, FastAPI — `backend/`, venv at `backend/.venv`
+- **Payload**: `backend/sim.py`, its own process
+- **Links**: telemetry packets over UDP `127.0.0.1:9000` (sim → backend); WebSocket (backend → browser)
+
+## What this is
+
+A rocket ground station, not a drone ground station with different fields. Three consequences that shape everything:
+
+1. **Receive-only.** There is no command path. No waypoints, no mission upload, no vehicle configuration. The backend opens a socket and listens; that is the whole of its relationship with the payload.
+2. **1 Hz downlink, ~10 packets from launch to apogee.** Every packet is a visible fraction of the dataset. Sampling, throttling or coalescing telemetry is data loss.
+3. **Altitude is not transmitted.** The downlink carries pressure, chamber temperature, GPS and a packet counter. Altitude, apogee, peak-vs-target, loss rate and bearing home are all derived on the ground.
+
+The job is: don't miss data, identify the flight events, know where the payload landed.
+
+## Two modes
+
+- **Live**: the sim sends packets over UDP, the backend fans each one out to every connected browser over a WebSocket.
+- **Replay**: the frontend plays a recorded flight from static JSON. Backend completely off.
+
+Both modes deliver identically shaped packets into one derivation function, so they cannot drift apart.
+
+## Hard constraints
+
+1. **Replay mode must work with no backend running.** The most important constraint in the project. Never break it.
+2. Packet loss is normal, not an error. The UI degrades gracefully and reports the loss rate; it never freezes or blanks.
+3. No new dependencies without asking first.
+4. One vertical slice at a time. No scaffolding ahead.
+
+## Working agreements
+
+- User is strong in Next.js/TS/Tailwind, newer to Python. Explain the reasoning behind implementation choices, not just the code.
+- Any manual action (installs, commands in a separate terminal, captures): STOP, give exact numbered steps, wait for confirmation before continuing.
+- The user writes these themselves, guided by a walkthrough — never produce them wholesale:
+  1. `frontend/app/lib/barometric.ts` — pressure to altitude
+  2. `frontend/app/lib/apogee.ts` — apogee detection
+- The user runs all git commits and pushes; supply commands and commit messages.
+- Concise. No filler.
+- CLAUDE.md and README stay purely technical — no applications, teams, or motivation.
+- Log every problem + solution in NOTES.md with dates. Update CLAUDE.md whenever a stack or architecture decision lands.
+
+## Dev environment
+
+- Python 3.12 on native Windows, venv at `backend/.venv`. Node 24, npm 11.
+- Three processes in live mode: `sim.py` (its own terminal), `uvicorn app:app`, `npm run dev`.
+- Nothing needs installing until slice 2 — `sim.py` is pure stdlib.
+
+### Traps carried over from the previous project, not yet hit here
+
+- **MapLibre + Turbopack**: Turbopack mangles MapLibre's module-worker URL and the dev server answers HTML, so tiles never load and the map renders as flat background with no failing network requests. Fix: copy `maplibre-gl-worker.mjs` and `maplibre-gl-shared.mjs` from `node_modules/maplibre-gl/dist/` into `frontend/public/`, then call `setWorkerUrl("/maplibre-gl-worker.mjs")` before the map mounts. Re-copy on any maplibre-gl upgrade.
+- **Windows reports a stale size for an open file.** A recorder writing happily will still show 0 bytes in `Get-ChildItem` until the process exits. Check an open file by reading it, not by its listed size.
+- **Windows Python stubs.** `%LOCALAPPDATA%\Microsoft\WindowsApps` ships fake `python.exe` aliases that can shadow a real install. Already resolved on this machine.
+
+## Build order
+
+- [x] 0. Repo skeleton — CLAUDE.md, NOTES.md, docs/media/, .gitignore, requirements.txt
+- [x] 1. Flight simulator: ascent/descent model, pressure + chamber temp + GPS at 1 Hz, injectable noise and packet loss, presets 400 m / 2200 m / 2000 m (capture 1) — done 2026-09-10 (`backend/sim.py`)
+- [ ] 2. FastAPI receiver + WebSocket fan-out, user-written barometric derivation, one live altitude in the browser unstyled (capture 2)
+- [ ] 3. Apogee detection (user-written), link health, flight event derivation
+- [ ] 4. Live view: altitude vs time with apogee and target, GPS track, payload health, peak vs target (capture 3, README hero)
+- [ ] 5. Recovery view: last known fix, bearing and distance from the pad (capture 4)
+- [ ] 6. Replay mode from a recorded log (capture 5)
+- [ ] 7. README with the hero GIF
+
+## Media protocol
+
+All captures go in `docs/media/`. GIFs 10–15 s, compressed for fast README loading. STOP at each capture point, specify what to record and the filename, wait for confirmation. **Warn before any change that would destroy a capture opportunity** (restyling, UI refactors, replacing placeholder data).
+
+Capture points:
+
+1. `01-simulator-terminal.png` — `sim.py` printing telemetry (still)
+2. `02-first-live-altitude-browser.gif` — first derived altitude in the browser, pre-CSS (short GIF) — **unrecoverable once slice 4 styles the page**
+3. `03-flight-altitude-apogee.gif` — altitude curve drawing with apogee marked (GIF, README hero). 400 m preset, launch through apogee only; a 2.2 km flight descends for minutes and cannot be a GIF.
+4. `04-recovery-view.png` — recovery view with bearing and distance (still)
+5. `05-replay-mode.gif` — replay with the backend confirmed off (GIF)
+
+## Decision log
+
+- **2026-09-10 — Receive-only, so there is no command path to build.** Everything in a ground station that exists to send bytes to a vehicle is absent by design, not stubbed: no HTTP command endpoint, no CORS middleware (nothing fetches the backend, and browsers do not CORS-check WebSockets), no request/response handshake competing for the connection. The backend's only job is receive, fan out, record.
+- **2026-09-10 — Simulator is a separate process sending UDP, not an in-process task.** Keeps a real receive boundary, so the backend is genuinely a receiver and killing the sim produces a real link-loss state rather than a simulated one. A flight can be restarted without restarting the backend. The UDP send is the seam where a serial LoRa modem would attach; that is noted, not built for.
+- **2026-09-10 — All derivation lives in the frontend as pure TypeScript.** The backend receives, relays and records but never interprets. Forced by the replay constraint: replay runs with the backend off, so anything replay must show has to compute in the browser. Payoff beyond that — recorded logs hold raw transmitted values, so a flight can be re-derived later against a different pad reference or an improved apogee algorithm.
+- **2026-09-10 — Wire format v1: `{schema, packet_id, pressure_pa, temp_c, lat_deg?, lon_deg?}`.** Flat JSON, SI units, unit suffix in every field name. It carries only what the radio transmits — no `alt_m`, no `time_s`. `lat_deg`/`lon_deg` are absent until GPS lock. The format grows by adding optional fields, never by renaming or re-scaling one, so recorded logs stay playable forever.
+- **2026-09-10 — The packet counter is the clock: `t_s = packet_id / rate`.** Uses a field already present rather than adding a timestamp, and is more correct than stamping receive time — a dropped packet leaves a gap in the counter, which becomes a gap of the right length on the time axis, whereas receive time would let radio jitter distort the flight profile. Against real hardware, transmit jitter and payload clock drift eventually make this insufficient and a payload timestamp gets added; in simulation it is exact.
+- **2026-09-10 — Per-packet broadcast, not a polled snapshot.** A snapshot sampled at a fixed rate is right for a telemetry firehose feeding a display that only wants current state. At 1 Hz it is wrong twice over: polling faster duplicates packets, polling at rate eventually skips one, and a skipped packet changes the pressure curve the apogee detector sees out of a sample set of ten. Each received packet is pushed to one bounded queue per connected client.
+- **2026-09-10 — Derived state is a pure function of the whole packet list, not an incremental fold.** A flight is at most a few hundred packets, so recomputing everything on each arrival is free, and it means changing the pad reference re-derives the entire flight instantly and seeking backwards in replay is a slice rather than a second code path.
+- **2026-09-10 — Everything derives from stream time, never `Date.now()`.** Link status, staleness and the loss window are computed against a `now_s` passed into the derivation. Live mode feeds it a wall clock, replay feeds it the playhead. One function, so replay reproduces live exactly instead of approximating it.
+- **2026-09-10 — The altitude chart is the primary surface; the map is secondary until recovery.** A rocket's GPS track during ascent is a near-vertical line and almost featureless in 2D. The map earns its space during descent and recovery, not during the flight.
+- **2026-09-10 - Boost acceleration is solved, not specified.** Each preset states a target apogee, a burn time and a drag term; the simulator bisects on boost acceleration at startup until the flight actually peaks at the target. Apogee is monotonic in acceleration, so bisection always converges. Without this, "400 m" would mean whatever the parameters happened to produce, and the peak-vs-target readout would have nothing honest to compare against.
+- **2026-09-10 - The default pad is not at sea level: 99500 Pa, about 150 m up.** Assuming 101325 Pa at the pad puts every derived altitude out by roughly that much, which is exactly the failure the pad-pressure calibration exists to prevent. Making the default wrong-if-ignored means the calibration step has to be real. Pad temperature defaults to ISA standard 15 C instead, so the pressure/altitude round trip is exact and a freshly written derivation can be validated against simulator truth with no error term in the way; raising --pad-temp reintroduces the error a real barometric solution carries (27 C at the pad reads about 88 m low at 2200 m).
+- **2026-09-10 - Default sensor noise is 25 Pa, which is not a datasheet figure.** A barometer inside a moving airframe sees aerodynamic pressure fluctuation an order of magnitude above its own electrical noise, and that is what actually makes apogee detection hard. At 25 Pa (about 2 m) the pad-resting pressure wanders roughly 80 Pa peak to peak, so a naive first-negative-delta detector declares apogee within a second or two of power-on, before the vehicle has moved.
+- **2026-09-10 - The flight starts with a pad hold and continues after landing.** Eight seconds of pad packets are the only chance the ground station gets to measure reference pressure before launch, and every altitude it reports is relative to that measurement. Fifteen seconds of post-landing transmission give the recovery view stationary fixes to settle on.

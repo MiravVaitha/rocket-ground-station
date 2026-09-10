@@ -141,3 +141,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env
+.env
+.env.local
+
+# Raw telemetry recordings (the trimmed replay asset in frontend/public IS committed)
+backend/recordings/
+
+# OS
+.DS_Store
+Thumbs.db
