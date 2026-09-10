@@ -57,6 +57,12 @@ export type FlightView = {
   lastFix: Packet | null;
   /** Mission time of that fix, so the UI can show how stale it is. */
   lastFixAge_s: number;
+  /**
+   * Where the pad is: the median of the fixes taken before launch. Median
+   * rather than first, because a single fix carries a few metres of GPS error
+   * and every recovery bearing is measured from this point.
+   */
+  padFix: { lat_deg: number; lon_deg: number } | null;
 };
 
 export type DeriveOptions = {
@@ -66,6 +72,12 @@ export type DeriveOptions = {
   padTemp_k?: number;
   apogeeConfig?: ApogeeConfig;
 };
+
+function medianOf(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
 
 const EMPTY_LINK: LinkStats = {
   received: 0,
@@ -117,6 +129,7 @@ export function deriveFlight(
       track,
       lastFix,
       lastFixAge_s: 0,
+      padFix: null,
     };
   }
 
@@ -134,6 +147,20 @@ export function deriveFlight(
     apogee !== null
       ? (samples.find((s) => s.t_s > apogee.t_s && s.alt_m <= LANDED_ALT_M) ??
         null)
+      : null;
+
+  // Fixes from before the vehicle moved. If launch has not happened yet every
+  // fix so far qualifies; cap it so this stays cheap and stable.
+  const groundFixes = packets.filter((p, i) => {
+    if (p.lat_deg === undefined || p.lon_deg === undefined) return false;
+    return launch === null ? i < 10 : samples[i].t_s <= launch.t_s;
+  });
+  const padFix =
+    groundFixes.length > 0
+      ? {
+          lat_deg: medianOf(groundFixes.map((p) => p.lat_deg!)),
+          lon_deg: medianOf(groundFixes.map((p) => p.lon_deg!)),
+        }
       : null;
 
   const phase: FlightPhase =
@@ -163,5 +190,6 @@ export function deriveFlight(
     track,
     lastFix,
     lastFixAge_s: lastFix ? Math.max(now_s - packetTime(lastFix), 0) : 0,
+    padFix,
   };
 }
