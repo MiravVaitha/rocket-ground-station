@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { altitudeFromPressure, T0_ISA_K } from "./lib/barometric";
+import { deriveFlight } from "./lib/flight";
 import {
   PAD_SAMPLES,
   type Packet,
   packetTime,
-  padReference,
   padReferenceFromLatest,
 } from "./lib/telemetry";
 
@@ -21,6 +20,30 @@ export default function Home() {
   const [connected, setConnected] = useState(false);
   const [padOverride, setPadOverride] = useState<number | null>(null);
 
+  // Stream clock. `anchor` pins the newest packet's mission time to the wall
+  // clock instant it arrived; the interval then advances `now_s` between
+  // arrivals so link staleness keeps climbing while nothing is coming in.
+  // Without that the UI would freeze on the last good frame, which is exactly
+  // the failure mode a lossy link must not have.
+  //
+  // Replay will set `now_s` straight from the playhead and skip all of this,
+  // feeding the same `deriveFlight` below.
+  const [anchor, setAnchor] = useState<{ t_s: number; atMs: number } | null>(
+    null
+  );
+  const [now_s, setNow_s] = useState(0);
+
+  useEffect(() => {
+    if (anchor === null) return;
+    // The interval does the first update too, within 250 ms. Setting state
+    // directly in the effect body would be a render-phase write.
+    const id = setInterval(
+      () => setNow_s(anchor.t_s + (Date.now() - anchor.atMs) / 1000),
+      250
+    );
+    return () => clearInterval(id);
+  }, [anchor]);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -31,6 +54,7 @@ export default function Home() {
       ws.onopen = () => setConnected(true);
       ws.onmessage = (event) => {
         const p: Packet = JSON.parse(event.data);
+        setAnchor({ t_s: packetTime(p), atMs: Date.now() });
         setPackets((prev) => {
           // The counter going backwards means the payload restarted. The old
           // flight's pad reference does not apply to the new one, and mixing
@@ -39,8 +63,6 @@ export default function Home() {
           return last && p.packet_id <= last.packet_id ? [p] : [...prev, p];
         });
       };
-      // Reconnect rather than give up: a dropped link is a normal condition
-      // here, and the backend replays the whole flight on reconnect.
       ws.onclose = () => {
         setConnected(false);
         if (!stopped) retry = setTimeout(connect, 2000);
@@ -55,28 +77,26 @@ export default function Home() {
     };
   }, []);
 
-  const latest = packets[packets.length - 1] ?? null;
-
-  // Derived, never stored: the pad reference is a pure function of the first
-  // few packets, so it settles once and re-derives identically on every render.
-  const pad_pa = padOverride ?? padReference(packets);
-
-  const alt_m =
-    latest && pad_pa !== null
-      ? altitudeFromPressure(latest.pressure_pa, {
-          pressure_pa: pad_pa,
-          temp_k: T0_ISA_K,
-        })
-      : null;
+  const view = deriveFlight(packets, now_s, { padOverride_pa: padOverride });
+  const { latest, link, apogee } = view;
 
   const readout = [
-    row("link", connected ? "connected" : "down"),
-    row("packets", String(packets.length)),
+    row("link", connected ? `${link.state} (ws up)` : "ws down"),
+    row("phase", view.phase),
+    row(
+      "packets",
+      link.received === 0
+        ? "0"
+        : `${link.received} of ${link.expected}  (${link.lost} lost, ` +
+          `${(link.lossRate * 100).toFixed(1)}% overall, ` +
+          `${(link.windowLossRate * 100).toFixed(0)}% recent)`
+    ),
+    row("last pkt", `${link.lastPacketAge_s.toFixed(1)} s ago`),
     row(
       "pad ref",
-      pad_pa === null
+      view.pad_pa === null
         ? `waiting for ${PAD_SAMPLES} packets`
-        : `${pad_pa.toFixed(1)} Pa${padOverride === null ? "" : "  (manual)"}`
+        : `${view.pad_pa.toFixed(1)} Pa${padOverride === null ? "" : "  (manual)"}`
     ),
     "",
     row("packet", latest ? String(latest.packet_id) : "-"),
@@ -85,18 +105,45 @@ export default function Home() {
     row("chamber", latest ? `${latest.temp_c.toFixed(2)} C` : "-"),
     row(
       "gps",
-      latest?.lat_deg !== undefined && latest.lon_deg !== undefined
-        ? `${latest.lat_deg.toFixed(6)}, ${latest.lon_deg.toFixed(6)}`
+      view.lastFix?.lat_deg !== undefined && view.lastFix.lon_deg !== undefined
+        ? `${view.lastFix.lat_deg.toFixed(6)}, ${view.lastFix.lon_deg.toFixed(6)}` +
+          (view.lastFixAge_s > 2 ? `   (${view.lastFixAge_s.toFixed(0)} s old)` : "")
         : "(no fix)"
     ),
     "",
-    row("ALTITUDE", alt_m === null ? "-" : `${alt_m.toFixed(1)} m`),
+    row(
+      "ALTITUDE",
+      view.samples.length
+        ? `${view.samples[view.samples.length - 1].alt_m.toFixed(1)} m`
+        : "-"
+    ),
+    row("peak", view.peak_m === null ? "-" : `${view.peak_m.toFixed(1)} m`),
+    row(
+      "APOGEE",
+      apogee
+        ? `${apogee.alt_m.toFixed(1)} m at t=${apogee.t_s.toFixed(1)} s ` +
+          `(declared ${(apogee.detectedAt_s - apogee.t_s).toFixed(1)} s later)`
+        : "not detected"
+    ),
+    "",
+    row(
+      "events",
+      view.events.length
+        ? view.events
+            .map(
+              (e) =>
+                `${e.label} t=${e.t_s.toFixed(1)}s` +
+                (e.alt_m !== undefined ? ` ${e.alt_m.toFixed(0)}m` : "")
+            )
+            .join("  |  ")
+        : "-"
+    ),
   ].join("\n");
 
   return (
     <main>
       <h1>CanSat Ground Station</h1>
-      <p>slice 2 - live barometric altitude, unstyled</p>
+      <p>slice 3 - apogee detection and link health, unstyled</p>
       <pre>{readout}</pre>
       <button
         onClick={() => setPadOverride(padReferenceFromLatest(packets))}

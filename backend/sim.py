@@ -24,6 +24,7 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 # --- International Standard Atmosphere ------------------------------------
 # The simulator turns altitude into pressure with these; the ground station
@@ -190,6 +191,11 @@ def main() -> None:
     p.add_argument("--udp", default=None, metavar="HOST:PORT", help="also send over UDP")
     p.add_argument("--quiet", action="store_true", help="suppress the per-packet lines")
     p.add_argument(
+        "--fixture", type=Path, default=None, metavar="PATH",
+        help="write transmitted packets plus ground truth to a JSON file, for "
+             "offline testing of the ground station",
+    )
+    p.add_argument(
         "--speed", type=float, default=1.0,
         help="wall-clock pacing multiplier; 0 runs as fast as possible (default 1)",
     )
@@ -263,6 +269,7 @@ def main() -> None:
     n_packets = int(flight[-1].t_s / period) + 1
     started = time.monotonic()
     sent = dropped = 0
+    transmitted: list[dict] = []
 
     try:
         for n in range(n_packets):
@@ -304,6 +311,7 @@ def main() -> None:
                     print(f"  {n:4d}  {t:6.1f}s   -- dropped --")
             else:
                 sent += 1
+                transmitted.append(packet)
                 if sock:
                     sock.sendto(json.dumps(packet).encode(), dest)
                 if not args.quiet:
@@ -333,6 +341,26 @@ def main() -> None:
     print(f"  landed     {math.hypot(land_n, land_e):.0f} m from the pad, "
           f"bearing {math.degrees(math.atan2(land_e, land_n)) % 360:.0f} deg")
     print(f"  duration   {last.t_s:.1f} s")
+
+    if args.fixture:
+        # Ground truth travels beside the packets so a test can score a
+        # derivation against what actually happened, without re-running this.
+        args.fixture.parent.mkdir(parents=True, exist_ok=True)
+        args.fixture.write_text(json.dumps({
+            "preset": preset.name,
+            "target_apogee_m": preset.target_apogee_m,
+            "rate_hz": args.rate,
+            "noise": args.noise,
+            "loss": args.loss,
+            "seed": args.seed,
+            "pad_pressure_pa": args.pad_pressure,
+            "pad_temp_c": args.pad_temp,
+            "truth_apogee_m": round(apogee.alt_m, 3),
+            "truth_apogee_t_s": round(apogee.t_s, 3),
+            "truth_land_t_s": round(t_land, 3),
+            "packets": transmitted,
+        }), encoding="utf-8")
+        print(f"  fixture    {args.fixture} ({len(transmitted)} packets)")
 
 
 if __name__ == "__main__":
