@@ -67,7 +67,7 @@ Both modes deliver identically shaped packets into one derivation function, so t
 - [x] 4. Live view: altitude vs time with apogee and target, GPS track, payload health, peak vs target (capture 3, README hero) - done 2026-09-10 (`AltitudeChart.tsx`, `FlightMap.tsx`, dashboard `page.tsx`)
 - [x] 5. Recovery view: last known fix, bearing and distance from the pad (capture 4) - done 2026-09-10 (`lib/recovery.ts`, bearing line and recovery framing in `FlightMap.tsx`, `FLIGHT | RECOVERY` toggle)
 - [x] 6. Replay mode from a recorded log (capture 5) - done 2026-09-11 (recorder in `backend/app.py`, `lib/recording.ts`, `LIVE | REPLAY` and the transport bar in `page.tsx`, bundled `public/flights/400m-gps-lost.jsonl`)
-- [ ] 7. README with the hero GIF
+- [x] 7. README with the hero GIF - done 2026-09-11
 
 ## Media protocol
 
