@@ -153,7 +153,7 @@ venv/
 .env
 .env.local
 
-# Raw telemetry recordings (the trimmed replay asset in frontend/public IS committed)
+# Flight recordings written by the backend (a flight copied into frontend/public/flights IS committed)
 backend/recordings/
 
 # OS

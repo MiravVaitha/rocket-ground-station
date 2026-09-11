@@ -12,6 +12,29 @@ Format:
 
 ---
 
+## 2026-09-11 - Replay showed LINK OK in the header with the backend stopped
+**Problem:** The header's status slot showed the link state derived at the playhead, so replaying with the backend off
+read "● LINK OK" in green - directly after live mode had said NO BACKEND. The value was correct (it was the link as it
+was at that moment of the recorded flight) but its position made it a claim about the present, which was false.
+**Solution:** in replay the status slot reads "↺ REPLAY" in neutral ink, and the link state moves into the transport
+bar beside the playhead time, prefixed "recorded". Where a value is shown decides what it claims, not just the value.
+
+## 2026-09-11 - `npx tsc` from the repo root runs the wrong program
+**Problem:** `npx tsc --noEmit -p frontend`, run from the repo root, printed "This is not the tsc command you are
+looking for" and exited 1. TypeScript is installed in `frontend/node_modules` only, so from the root npx found no local
+`tsc` and fell back to the unrelated npm package that happens to be called `tsc`.
+**Solution:** run the project's own binary - `frontend\node_modules\.bin\tsc.cmd --noEmit -p frontend` - or run
+`npx tsc --noEmit` from inside `frontend/`. `-p` chooses which project to check, not where npx looks for the binary.
+
+## 2026-09-11 - Backend `print()` lines missing from a redirected log
+**Problem:** With uvicorn started in the background and its output going to a file, uvicorn's own startup lines
+appeared but none of the backend's `[rx]` / `[rec]` lines did - although the recordings were being written. Python
+line-buffers stdout only when it is a terminal. Redirected to a file it is block-buffered, so the lines sit in memory
+until the buffer fills or the process exits cleanly, and a forced stop discards them. Uvicorn's lines got through
+because it logs through `logging`, which flushes after every record.
+**Solution:** nothing to change for normal use: in a terminal every line appears immediately. When capturing the log
+to a file, set `PYTHONUNBUFFERED=1` first (or run `python -u -m uvicorn app:app`).
+
 ## 2026-09-10 - Map paints background but never loads a tile (UNRESOLVED)
 **Problem:** The MapLibre basemap renders as a flat blue-grey field. The style, TileJSON and sprites all fetch 200 on
 the main thread, the canvas is correctly sized, WebGL is available - but not one vector tile is ever requested, and

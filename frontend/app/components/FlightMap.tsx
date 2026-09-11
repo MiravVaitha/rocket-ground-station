@@ -220,7 +220,14 @@ export default function FlightMap({
   // is known. After that the view belongs to whoever is driving.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !readyRef.current || !pad) return;
+    if (!map || !readyRef.current) return;
+    // Removed, not left where it was: seeking a replay back to before the pad
+    // was known must not show a pad from later in the flight.
+    if (!pad) {
+      padMarker.current?.remove();
+      padMarker.current = null;
+      return;
+    }
     if (!padMarker.current) {
       padMarker.current = new Marker({ element: markerEl(PAD_SVG) })
         .setLngLat([pad.lon_deg, pad.lat_deg])
@@ -234,10 +241,16 @@ export default function FlightMap({
     }
   }, [pad]);
 
-  // Payload marker.
+  // Payload marker. Removed when there is no fix, for the same reason as the
+  // pad marker above.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !readyRef.current || !position) return;
+    if (!map || !readyRef.current) return;
+    if (!position) {
+      posMarker.current?.remove();
+      posMarker.current = null;
+      return;
+    }
     if (!posMarker.current) {
       posMarker.current = new Marker({
         element: markerEl(payloadSvg(!!stale)),

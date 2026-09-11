@@ -61,7 +61,8 @@ export function withGaps(samples: AltitudeSample[]): Point[] {
   return out;
 }
 
-function clock(s: number): string {
+/** Mission time as m:ss. */
+export function clock(s: number): string {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
 

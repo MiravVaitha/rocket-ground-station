@@ -8,6 +8,7 @@ Receive-only ground station for a rocket-borne CanSat payload. Next.js frontend,
 - **Backend**: Python 3.12, FastAPI — `backend/`, venv at `backend/.venv`
 - **Payload**: `backend/sim.py`, its own process
 - **Links**: telemetry packets over UDP `127.0.0.1:9000` (sim → backend); WebSocket (backend → browser)
+- **Recordings**: `backend/recordings/flight-<UTC>.jsonl`, one per flight, gitignored; replayable flights ship in `frontend/public/flights/`
 
 ## What this is
 
@@ -21,8 +22,8 @@ The job is: don't miss data, identify the flight events, know where the payload 
 
 ## Two modes
 
-- **Live**: the sim sends packets over UDP, the backend fans each one out to every connected browser over a WebSocket.
-- **Replay**: the frontend plays a recorded flight from static JSON. Backend completely off.
+- **Live**: the sim sends packets over UDP, the backend records each one and fans it out to every connected browser over a WebSocket.
+- **Replay**: the frontend plays a recorded flight - a JSONL recording bundled in `public/flights/`, or one opened from disk. Backend completely off; the page does not even open the WebSocket.
 
 Both modes deliver identically shaped packets into one derivation function, so they cannot drift apart.
 
@@ -48,13 +49,13 @@ Both modes deliver identically shaped packets into one derivation function, so t
 ## Dev environment
 
 - Python 3.12 on native Windows, venv at `backend/.venv`. Node 24, npm 11.
-- Three processes in live mode: `sim.py` (its own terminal), `uvicorn app:app`, `npm run dev`.
+- Three processes in live mode: `sim.py` (its own terminal), `uvicorn app:app`, `npm run dev`. Replay needs only `npm run dev`.
 - Nothing needs installing until slice 2 — `sim.py` is pure stdlib.
 
 ### Traps carried over from the previous project, not yet hit here
 
 - **MapLibre + Turbopack** (hit here, and it is worse than the previous project recorded). maplibre's `defaultWorkerUrl()` returns an empty string unless `import.meta.url` is an http(s) URL, which it is not for a Turbopack chunk - so MapLibre calls `new Worker("")` and fails **silently**: no console error, no failed request, just a basemap that paints its background and never fetches a tile. `setWorkerUrl("/maplibre-gl-worker.mjs")` with maplibre's stock worker copied into `frontend/public/` fixes the URL and is in place; re-copy both `.mjs` files on any upgrade. It was still not sufficient on its own - see the raster decision below and NOTES.md 2026-09-10.
-- **Windows reports a stale size for an open file.** A recorder writing happily will still show 0 bytes in `Get-ChildItem` until the process exits. Check an open file by reading it, not by its listed size.
+- **Windows reports a stale size for an open file.** A recorder writing happily will still show 0 bytes in `Get-ChildItem` until the process exits. Check an open file by reading it, not by its listed size. The backend's recorder sidesteps it by opening, appending and closing on every packet, so its files always list at their real size.
 - **Windows Python stubs.** `%LOCALAPPDATA%\Microsoft\WindowsApps` ships fake `python.exe` aliases that can shadow a real install. Already resolved on this machine.
 
 ## Build order
@@ -65,7 +66,7 @@ Both modes deliver identically shaped packets into one derivation function, so t
 - [x] 3. Apogee detection (user-written), link health, flight event derivation - done 2026-09-10 (user-written `frontend/app/lib/apogee.ts`, plus `link.ts`, `flight.ts`, fixtures and `npm run check:apogee` - 6/6 fixtures pass, worst error 2.8 m and 0.9 s)
 - [x] 4. Live view: altitude vs time with apogee and target, GPS track, payload health, peak vs target (capture 3, README hero) - done 2026-09-10 (`AltitudeChart.tsx`, `FlightMap.tsx`, dashboard `page.tsx`)
 - [x] 5. Recovery view: last known fix, bearing and distance from the pad (capture 4) - done 2026-09-10 (`lib/recovery.ts`, bearing line and recovery framing in `FlightMap.tsx`, `FLIGHT | RECOVERY` toggle)
-- [ ] 6. Replay mode from a recorded log (capture 5)
+- [x] 6. Replay mode from a recorded log (capture 5) - done 2026-09-11 (recorder in `backend/app.py`, `lib/recording.ts`, `LIVE | REPLAY` and the transport bar in `page.tsx`, bundled `public/flights/400m-gps-lost.jsonl`)
 - [ ] 7. README with the hero GIF
 
 ## Media protocol
@@ -107,3 +108,10 @@ Capture points:
 - **2026-09-10 - The last known fix is not the last packet, and the UI says so.** A GPS receiver loses lock long before a radio link does, so the newest position can be much older than the newest packet. Every recovery number carries its provenance: fix age, how many packets have arrived since with no position, and the derived altitude at the fix. Above 15 m at the last fix, or more than three packets since, the view is marked suspect and states plainly that the payload drifted further and the distance is a lower bound. Measured on the simulator: with GPS lost at 60 m the last fix reads 417 m against a true landing of 491 m - 74 m short, which is precisely the error a confident-looking bearing would hide.
 - **2026-09-10 - Haversine and great-circle bearing, not flat-earth.** Over the kilometre or two a CanSat drifts a flat-earth approximation is accurate to well under a metre, but the exact forms cost two more trig calls and stay correct if the wind ever carries one further. Verified against known values: one degree of latitude comes out at 111195 m, and due east from 51N reads 89.7 degrees rather than 90 - the great circle really does curve.
 - **2026-09-10 - `--gps-dropout-below` in the simulator, latched.** Without a way to lose GPS before landing the case the recovery view exists for cannot be exercised. Once lock is lost on the way down it is never regained, because a receiver lying in a field generally does not get it back - and that is the scenario that loses hardware.
+- **2026-09-11 - One JSONL file per flight, written exactly as broadcast.** The backend appends every packet to `backend/recordings/flight-<UTC>.jsonl`, one JSON object per line, and starts a new file on the same `packet_id` reset that clears its in-memory history - so a file is always exactly one flight and nothing needs splitting afterwards. JSONL rather than a JSON array because it can be appended to: a crash leaves at most a partial last line, which replay skips, whereas an array that never got its closing bracket does not parse at all. The decoded packet is recorded, not the raw datagram, so replay sees exactly what the live display saw. It is written before it is fanned out, because the file is the durable copy.
+- **2026-09-11 - Open, append, close on every packet.** At 1 Hz that costs nothing and removes every failure an open handle has: stopping the backend mid-flight loses nothing, there is nothing to close on shutdown or on a flight reset, and Windows lists the file at its real size. A failed write is printed and counted but never stops the fan-out - losing the live display to a full disk would only compound it. The directory is created at startup, so an unwritable one fails before a flight rather than inside the receive callback.
+- **2026-09-11 - Replay is a prefix, not a second pipeline.** Replay holds the whole recording and hands `packets.slice(0, receivedBy(packets, playhead))`, with the playhead as `now_s`, to the same `deriveFlight`. That prefix is exactly the list live mode held at the same moment, so apogee is declared, the link degrades and GPS drops out at the stream times they did live - checked on two recordings, where apogee first appears at its own `detectedAt_s`. Seeking backwards is a shorter slice; the map removes its pad and payload markers when the prefix no longer contains them.
+- **2026-09-11 - The replay clock is the live stream clock with a rate.** Live anchors the newest packet's mission time to the wall clock; replay anchors the playhead to `performance.now()` and advances it `speed` seconds per second. The playhead is computed from elapsed time on every tick, not incremented per tick, so a throttled interval - a hidden tab ticks at 1 Hz - changes how often the screen updates, never where the playhead is. Playback stops on the last packet: running on would show the link as lost, which is a fact about the recording ending, not about the flight.
+- **2026-09-11 - The replay loader applies the backend's validation.** `parseRecording` accepts exactly what `telemetry.decode` would have broadcast, rebuilt field by field. An unreadable line is skipped and the count shown, like a corrupt frame; a counter going backwards is fatal, because it means two flights in one file and either pad reference would corrupt the other's altitudes.
+- **2026-09-11 - Replay does not connect, and an unreachable backend is not a lost link.** Closing the WebSocket loses nothing - the backend holds the flight and replays it to a browser that reconnects. In live mode an unreachable backend reads NO BACKEND rather than LINK LOST: when the browser cannot reach the receiver it knows nothing about the radio link either way. In replay the header's status slot reads REPLAY instead of a link state - there a green LINK OK with the backend stopped reads as a claim about now - and the link state at the playhead moves into the transport bar, marked recorded.
+- **2026-09-11 - A bundled flight, plus "open recording".** One recording ships in `public/flights/`, listed in `BUNDLED_FLIGHTS`, so replay works on a fresh checkout; any other recording opens straight from disk with no copy step. The bundled one is a real backend recording of `sim.py --preset 400 --loss 0.05 --seed 7 --gps-dropout-below 60`: 4.8% loss, apogee 401 m against 400 m truth, and the recovery view's stale-fix warning (last fix 417 m from the pad against a true landing at 491 m).
