@@ -9,6 +9,7 @@ Receive-only ground station for a rocket-borne CanSat payload. Next.js frontend,
 - **Payload**: `backend/sim.py`, its own process
 - **Links**: telemetry packets over UDP `127.0.0.1:9000` (sim → backend); WebSocket (backend → browser)
 - **Recordings**: `backend/recordings/flight-<UTC>.jsonl`, one per flight, gitignored; replayable flights ship in `frontend/public/flights/`
+- **Hosting**: frontend only, on Vercel, as a replay demo - https://rocket-ground-station.vercel.app. Root directory `frontend`, `NEXT_PUBLIC_DEFAULT_MODE=replay` set in the project, redeploys on every push to `main`
 
 ## What this is
 
@@ -29,7 +30,7 @@ Both modes deliver identically shaped packets into one derivation function, so t
 
 ## Hard constraints
 
-1. **Replay mode must work with no backend running.** The most important constraint in the project. Never break it.
+1. **Replay mode must work with no backend running.** The most important constraint in the project. Never break it - the public demo is nothing but replay with no backend.
 2. Packet loss is normal, not an error. The UI degrades gracefully and reports the loss rate; it never freezes or blanks.
 3. No new dependencies without asking first.
 4. One vertical slice at a time. No scaffolding ahead.

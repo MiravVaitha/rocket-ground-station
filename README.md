@@ -2,6 +2,8 @@
 
 Receive-only ground station for a rocket-borne CanSat payload: a Next.js dashboard, a FastAPI receiver, and a Python flight simulator standing in for the payload and its 1 Hz radio downlink.
 
+**Demo: [rocket-ground-station.vercel.app](https://rocket-ground-station.vercel.app)** - the dashboard replaying a recorded flight in the browser, with no backend behind it.
+
 ![Altitude against time for the 400 m preset, drawing packet by packet from launch to a marked apogee](docs/media/03-flight-altitude-apogee.gif)
 
 *The 400 m preset, launch to apogee. Altitude is derived on the ground from pressure; every dot is one received packet, and gaps are dropped packets.*
@@ -84,7 +86,7 @@ Only `npm run dev`. Click **REPLAY**: a recorded flight is bundled (400 m preset
 
 ### Deploying the dashboard
 
-Replay needs no backend, so the frontend deploys on its own. On Vercel: import the repository, set **Root Directory** to `frontend`, and add the environment variable `NEXT_PUBLIC_DEFAULT_MODE=replay` so the site opens on the bundled flight rather than an empty live view. The value is inlined when the site is built, so changing it takes a redeploy. LIVE on a deployment reads NO BACKEND: there is no receiver behind it.
+Replay needs no backend, so the frontend deploys on its own. On Vercel: import the repository, set **Root Directory** to `frontend`, and add the environment variable `NEXT_PUBLIC_DEFAULT_MODE=replay` so the site opens on the bundled flight rather than an empty live view. The value is inlined when the site is built, so changing it takes a redeploy. LIVE on a deployment reads NO BACKEND: there is no receiver behind it. The demo linked above is deployed exactly this way.
 
 ## Simulator
 
