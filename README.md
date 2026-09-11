@@ -82,6 +82,10 @@ Only `npm run dev`. Click **REPLAY**: a recorded flight is bundled (400 m preset
 
 *Replay with the backend stopped. The header reads REPLAY; the link state beside the playhead is the one recorded at that point in the flight.*
 
+### Deploying the dashboard
+
+Replay needs no backend, so the frontend deploys on its own. On Vercel: import the repository, set **Root Directory** to `frontend`, and add the environment variable `NEXT_PUBLIC_DEFAULT_MODE=replay` so the site opens on the bundled flight rather than an empty live view. The value is inlined when the site is built, so changing it takes a redeploy. LIVE on a deployment reads NO BACKEND: there is no receiver behind it.
+
 ## Simulator
 
 ![sim.py printing transmitted telemetry, with the simulator's ground truth to the right of a bar](docs/media/01-simulator-terminal.png)

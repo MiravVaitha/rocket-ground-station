@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import AltitudeChart, { clock } from "./components/AltitudeChart";
 import { deriveFlight, type FlightPhase } from "./lib/flight";
 import type { LinkState } from "./lib/link";
@@ -32,6 +32,17 @@ const SPEEDS = [1, 2, 5, 10, 20];
 
 type Mode = "live" | "replay";
 type Pane = "flight" | "recovery";
+
+/**
+ * The mode the page opens in. Live, unless the build says otherwise: a
+ * deployment with no receiver behind it is built with
+ * NEXT_PUBLIC_DEFAULT_MODE=replay, so it opens on a recorded flight rather
+ * than an empty dashboard that has already tried to reach a backend on the
+ * visitor's own machine. Inlined at build time, which only happens when the
+ * variable is written out in full like this.
+ */
+const DEFAULT_MODE: Mode =
+  process.env.NEXT_PUBLIC_DEFAULT_MODE === "replay" ? "replay" : "live";
 
 /** Shown where there is no value yet. Always in muted ink, never white. */
 const PLACEHOLDER = "—";
@@ -161,7 +172,7 @@ function Segmented<T extends string | number>({
 export default function Home() {
   // Mode is where the packets come from. Everything downstream of that one
   // choice - derivation, chart, map, recovery - is shared by both modes.
-  const [mode, setMode] = useState<Mode>("live");
+  const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
 
   const [packets, setPackets] = useState<Packet[]>([]);
   const [connected, setConnected] = useState(false);
@@ -307,6 +318,14 @@ export default function Home() {
     setPlayClock(null);
     if (next === "replay" && replay === null) loadBundled(BUNDLED_FLIGHTS[0]);
   }
+
+  // Opening straight into replay loads the bundled flight, exactly as
+  // switching to replay by hand does. An effect event, because the load is
+  // something to do once on mount, not something to redo when it changes.
+  const openDefaultFlight = useEffectEvent(() => loadBundled(BUNDLED_FLIGHTS[0]));
+  useEffect(() => {
+    if (DEFAULT_MODE === "replay") openDefaultFlight();
+  }, []);
 
   function playheadNow(): number {
     return playClock === null
